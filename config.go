@@ -3,7 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -12,7 +14,10 @@ type ConfigReader struct {
 	comment      string
 	section_btag string
 	section_etag string
+	array_tag    string
+	sep          string
 	sections     map[string]interface{}
+	path         string
 }
 
 func NewConfigReader() *ConfigReader {
@@ -23,15 +28,43 @@ func NewConfigReader() *ConfigReader {
 		array_tag:    "[]",
 		sep:          "=",
 		sections:     make(map[string]interface{}),
+		path:         "",
 	}
 }
 
+func (this *ConfigReader) SetComment(comment string) {
+	this.comment = comment
+}
+
+func (this *ConfigReader) SetSectionTag(btag, etag string) {
+	this.section_etag = etag
+	this.section_btag = btag
+}
+
+func (this *ConfigReader) SetArrayTag(tag string) {
+	this.array_tag = tag
+}
+
+func (this *ConfigReader) SetSep(tag string) {
+	this.sep = tag
+}
+
 func (this *ConfigReader) Read(path string) error {
-	str, err := ioutil.ReadAll(path)
+	this.path = path
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return this.ReadFromStream(f)
+}
+
+func (this *ConfigReader) ReadFromStream(reader io.Reader) error {
+	b, err := ioutil.ReadAll(reader)
 	if err != nil {
 		return err
 	}
 
+	var str = string(b)
 	str = strings.Replace(str, "\r\n", "\n", -1)
 	str = strings.Replace(str, "\r", "\n", -1)
 
@@ -46,9 +79,9 @@ func (this *ConfigReader) Read(path string) error {
 
 		if strings.HasPrefix(line, this.section_btag) {
 			var btag = strings.Index(line, this.section_btag)
-			var etag = strings.Index(line, this.section_etag)
+			var etag = strings.LastIndex(line, this.section_etag)
 			if btag == -1 || etag == -1 {
-				return errors.New(fmt.Sprintf("config file '%s' error, line no: %d", path, i+1))
+				return errors.New(fmt.Sprintf("config file '%s' error, line no: %d", this.path, i+1))
 			}
 
 			if section != "" {
@@ -61,7 +94,7 @@ func (this *ConfigReader) Read(path string) error {
 		} else {
 			var pairs = strings.SplitN(line, this.sep, 2)
 			if len(pairs) != 2 {
-				return errors.New(fmt.Sprintf("config file '%s' error, line no: %d", path, i+1))
+				return errors.New(fmt.Sprintf("config file '%s' error, line no: %d", this.path, i+1))
 			}
 
 			var index = strings.Index(pairs[0], this.array_tag)
@@ -72,10 +105,11 @@ func (this *ConfigReader) Read(path string) error {
 				if v, found := m[key]; found {
 					vv, ok := v.([]string)
 					if !ok {
-						return errors.New(fmt.Sprintf("config file '%s' error, type assertion []string failed", path))
+						return errors.New(fmt.Sprintf("config file '%s' error, type assertion []string failed", this.path))
 					}
 
 					vv = append(vv, strings.TrimSpace(pairs[1]))
+					m[key] = vv
 				} else {
 					vv := []string{strings.TrimSpace(pairs[1])}
 					m[key] = vv
@@ -116,7 +150,7 @@ func (this *ConfigReader) Int(section, key string) (int, error) {
 
 	var str, ok = p.(string)
 	if !ok {
-		return 0, errors.New(fmt.Sprintf("section '%s' key '%s' type assertion int failed", section, key))
+		return 0, errors.New(fmt.Sprintf("section '%s' key '%s' type assertion string failed", section, key))
 	}
 	var i, err = strconv.Atoi(str)
 	if err != nil {
@@ -124,6 +158,19 @@ func (this *ConfigReader) Int(section, key string) (int, error) {
 	}
 
 	return i, nil
+}
+func (this *ConfigReader) String(section, key string) (string, error) {
+	var p, found = this.checkSectionKey(section, key)
+	if !found {
+		return "", errors.New(fmt.Sprintf("section '%s' key '%s' not exists", section, key))
+	}
+
+	var str, ok = p.(string)
+	if !ok {
+		return "", errors.New(fmt.Sprintf("section '%s' key '%s' type assertion string failed", section, key))
+	}
+
+	return str, nil
 }
 
 func (this *ConfigReader) Bool(section, key string) (bool, error) {
@@ -163,6 +210,7 @@ func (this *ConfigReader) ArrayInt(section, key string) ([]int, error) {
 		}
 		res = append(res, i)
 	}
+	return res, nil
 }
 
 func (this *ConfigReader) ArrayString(section, key string) ([]string, error) {
@@ -171,7 +219,7 @@ func (this *ConfigReader) ArrayString(section, key string) ([]string, error) {
 		return nil, errors.New(fmt.Sprintf("section '%s', key '%s' not exists", section, key))
 	}
 
-	var a, ok = p([]string)
+	var a, ok = p.([]string)
 	if !ok {
 		return nil, errors.New(fmt.Sprintf("section '%s' key '%s' type assertion []string failed", section, key))
 	}
@@ -192,7 +240,7 @@ func (this *ConfigReader) SectionOptions(section string) ([]string, error) {
 
 	var m, ok = p.(map[string]interface{})
 	if !ok {
-		return nil, errros.New(fmt.Sprintf("section '%s' type assertion map[string]interface{} failed", section))
+		return nil, errors.New(fmt.Sprintf("section '%s' type assertion map[string]interface{} failed", section))
 	}
 	var res = make([]string, 0, len(m))
 	for k, _ := range m {
